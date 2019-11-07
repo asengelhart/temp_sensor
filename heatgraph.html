@@ -1,0 +1,281 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+	<title>Temperature</title>
+	<script src="/vis-4.21.0/dist/vis.js" type="text/javascript"></script>
+	<link href="/vis-4.21.0/dist/vis-timeline-graph2d.min.css" rel="stylesheet" type="text/css" />
+
+<script type="text/javascript">
+const SECOND = 1000, MINUTE = 60000, HOUR = 3600000;
+var myGraph;
+var data_object = [];
+
+var getTempLimits = function() {
+    var thisrequest = new XMLHttpRequest();
+    thisrequest.onreadystatechange = function() {
+        if(this.readyState == 4) {
+            if(this.status == 200) {
+                let response = JSON.parse(this.responseText);
+                //console.log(response);
+                document.getElementById("temp_min_input").value = response["min_temp"];
+                document.getElementById("temp_max_input").value = response["max_temp"];
+            }
+            else {
+                if(this.status == 404) {
+                    apologize(new Error("Error 404: No temperatures found in this range"));
+                }
+                else {
+                    apologize(new Error("Error " + this.status + ": " + this.responseText));
+                }
+            }
+        }
+    }
+    thisrequest.open("GET", "/temp_limits");
+    thisrequest.send();
+ }
+
+ var getHvac = function() {
+    var thisrequest = new XMLHttpRequest();
+    thisrequest.onreadystatechange = function() {
+        if(this.readyState == 4) {
+            if(this.status == 200) {
+                let response = this.responseText;
+                //console.log(response);
+                document.getElementById("manual_toggle").innerHTML = response
+                if(response == "HVAC ERROR") {
+                    alert("The HVAC error-sensing circuit is reporting a problem.\n"
+                        + "Please inspect the server room HVAC unit as soon as possible.");
+                }
+            }
+            else {
+                if(this.status == 404) {
+                    apologize(new Error("Error 404: No temperatures found in this range"));
+                }
+                else {
+                    apologize(new Error("Error " + this.status + ": " + this.responseText));
+                }
+            }
+        }
+    }
+    thisrequest.open("GET", "/hvac");
+    thisrequest.send();
+ }
+
+//TODO: use handwritten pseudocode to implement date searching
+
+/*Maps server array output to a Visjs DataSet object
+  and creates a new graph in the document.  The act 
+  of creating the Graph2D object causes the graph
+  to be rendered. */
+var updateGraph = function(entries){
+    try {
+        myGraph.off('rangechanged');
+        data_object = new vis.DataSet(entries.map(function(value, index, array) {
+            return {x: array[index]["time"], y: array[index]["temp"]}
+        }));
+        myGraph.setOptions({start: entries[0]["time"], end: entries[entries.length - 1]["time"]});
+        myGraph.setItems(data_object);
+        myGraph.redraw();
+        getHvac();
+        getTempLimits();
+        myGraph.on('rangechanged', onChange);
+    }
+    catch(e) {apologize(e)};
+}
+
+/*Sends an AJAX request to the server to retrieve
+  all temperature records between start and end.
+  If successful, creates a new graph containing those
+  values. Takes Date objects as parameters, which should
+  include dates and times accurate to the minute.*/
+var updateEntries = function(start, end) {
+    try {
+        var thisrequest = new XMLHttpRequest();
+        thisrequest.onreadystatechange = function() {
+            if(this.readyState == 4) {
+                if(this.status == 200) {
+                    let response = JSON.parse(this.responseText);
+                    //console.log(response);
+                    updateGraph(response);
+                }
+                else {
+                    if(this.status == 404) {
+                        throw new Error("Error 404: No temperatures found in this range");
+                    }
+                    else {
+                        throw new Error("Error " + this.status + ": " + this.responseText);
+                    }
+                }
+            }
+        }
+        thisrequest.open("GET", "/gettemp?start="+ start + "&end=" + end);
+        thisrequest.send();
+    }
+    catch(e) {apologize(e)};
+}
+
+var pullDatesFromForm = function() {
+    try {
+        var start = Date.parse(document.getElementById("times-start").value);
+        var end = Date.parse(document.getElementById("times-end").value);
+        if(start >= end) {
+            alert("Start date/time must be before end.");
+        }
+        else {
+            updateEntries(start, end);
+            //console.log("Pulled dates: "+ start.toISOString() + "   " + end.toISOString());
+            console.log(typeof start + "  " + typeof end);
+        }
+    }
+    catch(e) {
+        if(e.name == "RangeError") {
+            alert("The provided dates/times are not valid. Please use the date picker that appears \n"
+                + "on clicking the input fields. You may need to use Chrome in order to do so.");
+        }
+        else {
+            apologize(e);
+        }
+    }
+}
+
+var onChange = function(properties) {
+    if(properties.byUser){
+        let new_start = Date.parse(properties.start);
+        let new_end = Date.parse(properties.end);
+        console.log ("Old times: " + myGraph.options.start + " " + myGraph.options.end + "\n"
+                   + "New times: " + new_start + " " + new_end);
+        if(new_start < myGraph.options.start || new_end > myGraph.options.end){
+            updateEntries(new_start, new_end);
+        }
+        
+        myGraph.setWindow(new_start, new_end);
+        myGraph.setOptions({start:new_start, end:new_end});
+        document.getElementById('times-start').value = new Date(new_start).toISOString().slice(0, 16);
+        document.getElementById('times-end').value = new Date(new_end).toISOString().slice(0, 16);
+    }
+}
+
+var initialize = function(isFirstLoad) {
+    var endTime = Date.now();
+    var startTime = Date.now() - (30 * MINUTE);
+    console.log(isFirstLoad);
+    if(isFirstLoad) {
+        var container = document.getElementById('heat_graph');
+        var options = {
+            start: startTime,
+            end: endTime,
+            orientation: "both",
+            shaded: {enabled: true},
+            dataAxis:
+                {left: {
+                    range: {min:55, max:90},
+                    title:{text:"Temperature"}
+                }},
+            showCurrentTime: false
+        };
+        myGraph = new vis.Graph2d(container, data_object, options);
+        myGraph.on('rangechanged', onChange);
+    }
+    var defaultEnd = endTime - ((new Date().getTimezoneOffset()) * MINUTE);
+    var defaultStart = startTime - ((new Date().getTimezoneOffset()) * MINUTE);
+    document.getElementById('times-start').value = new Date(defaultStart).toISOString().slice(0, 16);
+    document.getElementById('times-end').value = new Date(defaultEnd).toISOString().slice(0, 16);
+    updateEntries(startTime, endTime);
+}
+
+var validate_temps = function() {
+    var min_temp = document.getElementById("temp_min_input").value;
+    var max_temp = document.getElementById("temp_max_input").value;
+    if(min_temp < 65 || max_temp > 80){
+        alert("Temperature limits must be between 65 and 80 degrees Fahrenheit.");
+        return false;
+    }
+    else if(min_temp > max_temp) {
+        alert("Minimum must be smaller than maximum.");
+        return false;
+    }
+    else {
+        return true;
+    }
+}
+
+var set_hvac = function() {
+    try {
+        var thisrequest = new XMLHttpRequest();
+        thisrequest.onreadystatechange = function() {
+            if(this.readyState == 4) {
+                if(this.status == 200) {
+                    let response = this.responseText;
+                    document.getElementById("manual_toggle").innerHTML = response;
+                }
+                else {
+                    throw new Error("Error " + this.status + ": " + this.responseText);
+                }
+            }
+        }
+        thisrequest.open("POST", "/switch_hvac");
+        thisrequest.send();
+    }
+    catch(e) {apologize(e)};
+}
+
+var set_temps = function() {
+    if(validate_temps() == true) {
+        var min_temp = document.getElementById("temp_min_input").value;
+        var max_temp = document.getElementById("temp_max_input").value;
+        try {
+            var thisrequest = new XMLHttpRequest();
+            thisrequest.onreadystatechange = function() {
+                if(this.readyState == 4) {
+                    if(this.status == 200) {
+                        let response = JSON.parse(this.responseText);
+                        //console.log(response);
+                        document.getElementById("temp_min_input").value = response["min_temp"];
+                        document.getElementById("temp_max_input").value = response["max_temp"];
+                        alert("New temperature limits set!");
+                    }
+                    else {
+                        throw new Error("Error " + this.status + ": " + this.responseText);
+                    }
+                }
+            }
+            thisrequest.open("POST", "/temp_limits");
+            thisrequest.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
+            thisrequest.send("temp_min_input="+ min_temp + "&temp_max_input=" + max_temp);
+        }
+        catch(e) {apologize(e)};
+    }
+}
+
+var apologize = function(e) {
+    console.log("Browser error caught");
+    alert("An unexpected error has occured: \n"
+        + e.name + "\n"
+        + "\"" + e.message + "\"\n"
+        + "Please let me know what happened so I can fix it. Thanks!\n"
+        + "         -Alex");  
+}
+</script>
+</head>
+<body onload="initialize(true);">
+    <div id="heat_graph"></div>
+    <form id="times">
+        <label for="times-start">Beginning date/time</label>
+        <input type="datetime-local" id="times-start" />
+        <label for="times-end">End date/time</label>
+        <input type="datetime-local" id="times-end" />
+        <button type="button" onclick="pullDatesFromForm();">View date range</button> 
+        <button id="reinitialize" onclick="initialize(false);" type="button">Reload graph</button>
+    </form>
+    <form id="temp_limits" action="/temp_limits" method="post" onsubmit="validate_temps();">
+        <label for="temp_min_input">Minimum temperature (Fahrenheit)</label>
+        <input type="number" id="temp_min_input" name="temp_min_input" />
+        <label for="temp_max_input">Maximum temperature (Fahrenheit)</label>
+        <input type="number" id="temp_max_input" name ="temp_max_input" />
+        <button id="set-limits" type="button" onclick="set_temps();">Reset temperature limits</button>
+    </form>
+    <form id="manual_toggle_form" method="post" action="/switch_hvac" onload="getHvac();">
+        <button id="manual_toggle" type="button" onclick="set_hvac();"></button>
+    </form>
+</body>
+</html>
